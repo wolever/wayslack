@@ -350,8 +350,8 @@ class Channel(object):
                     if day_archive.exists() else []
                 )
                 cur.extend(day_msgs)
-                print "%s: %s new messages in %s" %(
-                    self.name, len(day_msgs), day_archive,
+                print "%s: %s new messages in %s (saving to %s)" %(
+                    self.name, len(day_msgs), self.name, day_archive,
                 )
                 for msg in day_msgs:
                     if "file" in msg or "attachments" in msg:
