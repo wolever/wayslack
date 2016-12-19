@@ -24,14 +24,14 @@ Getting Started
 
 4. Run ``./slack-archiver.py path/to/export/directory`` to download all messages and files::
 
-   $ ./slack-archiver.py my-export/
-   API token for my-export/ (see https://api.slack.com/web): xoxp-1234-abcd
-   Processing: my-export/
-   Downloading https://.../image.jpg
-   #general: 10 new messages in #general (saving to my-export/_channel-C049V24HY/2016-12-19.json)
-   $ ls my-export/_files/
-   ...
-   https%3A%2F%2F...%2Fimage.jpg
+    $ ./slack-archiver.py my-export/
+    API token for my-export/ (see https://api.slack.com/web): xoxp-1234-abcd
+    Processing: my-export/
+    Downloading https://.../image.jpg
+    #general: 10 new messages in #general (saving to my-export/_channel-C049V24HY/2016-12-19.json)
+    $ ls my-export/_files/
+    ...
+    https%3A%2F%2F...%2Fimage.jpg
 
 5. Optionally, create a configuration file so multiple teams can be archived easily::
 
