@@ -1,0 +1,4 @@
+PyYAML
+pathlib
+slacker
+requests

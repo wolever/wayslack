@@ -6,6 +6,7 @@ import sys
 import shutil
 import urllib
 import atexit
+import hashlib
 import argparse
 from threading import Thread
 from datetime import datetime
@@ -17,6 +18,7 @@ try:
 except ImportError:
     import json
 
+import yaml
 import pathlib
 import requests
 from slacker import Slacker
@@ -156,10 +158,16 @@ class open_atomic(object):
 def pluck(dict, keys):
     return [(k, dict[k]) for k in keys if k in dict]
 
+def sha256(s):
+    return hashlib.sha256(s).hexdigest()
+
 def url_to_filename(url, _t_re=re.compile("\?t=[^&]*$")):
     if url.startswith("https://files.slack.com"):
         url = _t_re.sub("", url)
-    return urllib.quote(url, safe="")
+    url = urllib.quote(url, safe="")
+    if len(url) > 190:
+        url = url[:50] + "+" + sha256(url) + "+" + url[-50:]
+    return url
 
 class Downloader(object):
     def __init__(self, path):
@@ -172,7 +180,7 @@ class Downloader(object):
             shutil.rmtree(str(self.lockdir))
         self.lockdir.mkdir()
         self.pending_file = self.path / "pending.json"
-        self.queue = Queue(maxsize=1000)
+        self.queue = Queue(maxsize=5000)
         if self.pending_file.exists():
             pending = json.loads(self.pending_file.open().read())
             for item in pending:
@@ -230,8 +238,15 @@ class Downloader(object):
                     lockdir = None
                     continue
 
-                res = requests.get(url, stream=True)
-                with open_atomic(base + joiner + "meta-" + name + ".txt") as meta, open_atomic(target) as f:
+                meta_file = base + joiner + "meta-" + name + ".txt"
+                try:
+                    res = requests.get(url, stream=True)
+                except Exception as e:
+                    print "Error:", e
+                    with open_atomic(meta_file) as meta:
+                        meta.write("999\nException: %r" %(e, ))
+                    continue
+                with open_atomic(meta_file) as meta, open_atomic(target) as f:
                     meta.write("%s\n%s" %(
                         res.status_code,
                         "\n".join(
@@ -287,7 +302,6 @@ class Channel(object):
 
     def refresh(self):
         self._refresh_messages()
-        self.downloader.join()
 
     def download_all_files(self):
         for archive in self.iter_archives():
@@ -341,7 +355,7 @@ class Channel(object):
                 )
                 for msg in day_msgs:
                     if "file" in msg or "attachments" in msg:
-                        self.downloader.add_message(self, msg)
+                        self.downloader.add_message(msg)
                 with open_atomic(str(day_archive)) as f:
                     json.dump(cur, f)
                 if float(day_msgs[-1]["ts"]) > float(latest_ts):
@@ -355,8 +369,14 @@ class SlackArchive(object):
         self.dir = dir
         self.slack = slack
         self.path = pathlib.Path(dir)
-        self.downloader = Downloader(self.path / "_files")
         self._chansdir = self.path / "_channels.json"
+
+    def __enter__(self):
+        self.downloader = Downloader(self.path / "_files")
+        return self
+
+    def __exit__(self, *a):
+        self.downloader.join()
 
     def needs_upgrade(self):
         for _ in self._upgrade():
@@ -373,17 +393,6 @@ class SlackArchive(object):
             return [Channel(self, o) for o in json.load(f)]
 
     def _upgrade(self):
-        chan_file = self.path / "channels.json"
-        if not chan_file.is_symlink():
-            yield
-            if not self._chansdir.exists():
-                self._chansdir.mkdir()
-            target = self._chansdir / ("%s.json" %(
-                ts2datetime(chan_file.stat().st_mtime).isoformat(),
-            ))
-            chan_file.rename(target)
-            chan_file.symlink_to(self._chansdir.name + "/" + target.name)
-
         for chan in self.channels:
             chan_name_dir = self.path / chan.name
             if not chan_name_dir.is_symlink():
@@ -395,27 +404,99 @@ class SlackArchive(object):
         for chan in self.channels:
             chan.refresh()
 
+def args_get_archives(args):
+    for a in args.archive:
+        token, _, path = a.rpartition(":")
+        path = os.path.expanduser(path)
+        if not os.path.isdir(path):
+            print "ERROR: not a directory: %s" %(path, )
+            continue
+        while not token:
+            token = raw_input("API token for %s (see: https://api.slack.com/web): ")
+        yield {
+            "token": token,
+            "dir": path,
+            "name": path,
+        }
 
-def main():
-    #args = parser.parse_args()
-    dir = "./tbus"
-    token = open("/Users/wolever/.slack-archiver").read().strip()
+    default_config_file = os.path.expanduser("~/.slack-archiver/config.yaml")
+    config_file = (
+        args.config if args.config else
+        default_config_file if os.path.exists(default_config_file) and not args.archive else
+        None
+    )
+    if config_file:
+        config = yaml.load(open(config_file))
+        for archive in config["archives"]:
+            archive.setdefault("name", archive["dir"])
+            archive["dir"] = os.path.expanduser(archive["dir"])
+            archive["dir"] = os.path.join(os.path.dirname(config_file), archive["dir"])
+            yield archive
+
+def main(argv):
+    args = parser.parse_args(argv)
+
+    archives = list(args_get_archives(args))
+    if not archives:
+        print "ERROR: no archives specified. Specify an archive or a config file."
+        return 1
     
-    slack = Slacker(token)
-    archive = SlackArchive(slack, dir)
+    for a in archives:
+        print "Processing:", a["name"]
+        slack = Slacker(a["token"])
+        with SlackArchive(slack, a["dir"]) as archive:
+            needs_upgrade = archive.needs_upgrade()
+            if needs_upgrade:
+                print "Notice: slack-archiver needs to fiddle around with some symlinks."
+                print "This will cause some non-destructive changes to the directory."
+                res = raw_input("Continue? Y/n: ")
+                if res and res.lower()[:1] != "y":
+                    break
+                archive.upgrade()
 
-    if archive.needs_upgrade():
-        print "Needs upgrade!"
-        archive.upgrade()
+            if needs_upgrade or args.download_everything:
+                for chan in archive.channels:
+                    chan.download_all_files()
 
-    for chan in archive.channels:
-        chan.download_all_files()
+            archive.refresh()
 
-    archive.refresh()
+example_config_file = """---
+archives:
+  - dir: path/to/slack/export # relative to this file
+    token: xoxp-1234-abcd # from the bottom of https://api.slack.com/web
+  - dir: some-other-export
+    token: xoxp-9876-wxyz
+"""
 
+parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter, description="""
+Incrementally archive all content from a Slack team using the Slack export
+format.
 
-#parser = argparse.ArgumentParser(description="Archive a Slack site")
-#parser.add_argument("--token", help="An API token (from the bottom of https://api.slack.com/web)")
+To get started:
+
+1. Export your team history: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
+
+2. Get a token from the bottom of: https://api.slack.com/web
+
+3. Run `./slack-archiver.py path/to/export/directory`
+
+And, optionally, create a configuration file:
+
+$ cat ~/.slack-archiver/config.yaml
+%s
+""" %(example_config_file, ))
+parser.add_argument("--config", "-c", help="Configuration file. Default: ~/.slack-archiver/config.yaml")
+parser.add_argument("--download-everything", "-d", default=False, action="store_true", help="""
+    Re-scan all messages for files to download (by default only new files are
+    downloaded, except on the first run when all files are downloaded). This
+    option generally isn't necessary.
+""")
+parser.add_argument("archive", nargs="*", default=[], help="""
+    Path to a Slack export directory. A token can be provided by prefixing
+    the path with the token: "token:path" (for example,
+    "xoxp-1234-abcd:~/Downloads/foo"). Get a token from the bottom of
+    https://api.slack.com/web.
+""")
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

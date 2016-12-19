@@ -1,0 +1,3 @@
+- Update channels.json file
+- Update user profiles
+- Download private messages
