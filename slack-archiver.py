@@ -173,8 +173,9 @@ def url_to_filename(url, _t_re=re.compile("\?t=[^&]*$")):
 
 
 class Downloader(object):
-    def __init__(self, path):
+    def __init__(self, token, path):
         self.counter = 0
+        self.token = token
         self.path = path
         if not path.exists():
             self.path.mkdir()
@@ -243,7 +244,12 @@ class Downloader(object):
 
                 meta_file = base + joiner + "meta-" + name + ".txt"
                 try:
-                    res = requests.get(url, stream=True)
+                    res = requests.get(
+                        url,
+                        headers={"Authorization": "Bearer %s" %(self.token, )},
+                        stream=True,
+                        timeout=60,
+                    )
                 except Exception as e:
                     print "Error:", e
                     with open_atomic(meta_file) as meta:
@@ -284,7 +290,7 @@ class Downloader(object):
         file = msg.get("file")
         if file:
             self.add(pluck(file, [
-                "url_private_download",
+                "url_private",
                 "thumb_480",
             ]))
 
@@ -293,6 +299,16 @@ class Downloader(object):
                 "service_icon",
                 "thumb_url",
             ]))
+
+    def add_user_profile(self, profile):
+        self.add([
+            (k, "%s#%s" %(url, profile.get("avatar_hash")))
+            for (k, url) in pluck(profile, [
+                "image_512",
+                "image_192",
+                "image_72",
+            ])
+        ])
 
 
 class ItemBase(object):
@@ -519,6 +535,8 @@ class ArchiveUsers(BaseArchiver):
 
     def refresh(self):
         self.update()
+        for user in self.get_list():
+            self.archive.downloader.add_user_profile(user.profile)
         archive_users = self.archive.path / "users.json"
         if not archive_users.exists():
             archive_users.symlink_to(os.path.relpath(
@@ -547,7 +565,7 @@ class SlackArchive(object):
         ]
 
     def __enter__(self):
-        self.downloader = Downloader(self.path / "_files")
+        self.downloader = Downloader(self.slack.api.token, self.path / "_files")
         return self
 
     def __exit__(self, *a):
