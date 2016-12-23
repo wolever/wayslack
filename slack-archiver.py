@@ -333,6 +333,8 @@ class ItemBase(object):
                     self.downloader.add_message(msg)
 
     def iter_archives(self, reverse=False):
+        if not self.path.exists():
+            return
         for f in sorted(self.path.glob("*.json"), reverse=reverse):
             yield f
 
@@ -341,9 +343,6 @@ class ItemBase(object):
             return json.load(f)
 
     def _refresh_messages(self):
-        if not self.path.exists():
-            self.path.mkdir()
-
         latest_archive = next(self.iter_archives(reverse=True), None)
         latest_ts = 0
         if latest_archive:
@@ -361,6 +360,9 @@ class ItemBase(object):
 
             msgs = resp.body["messages"]
             msgs.sort(key=lambda m: m["ts"])
+
+            if msgs and not self.path.exists():
+                self.path.mkdir()
 
             ts2ymd = lambda ts: ts2datetime(float(ts)).strftime("%Y-%m-%d")
             for day, day_msgs in groupby(msgs, key=lambda m: ts2ymd(m["ts"])):
