@@ -19,4 +19,4 @@ misc/
 dist/
 Icon?
 node_modules/
-tbus*
+test-*

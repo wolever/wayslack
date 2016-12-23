@@ -1,4 +1,1 @@
 - Create a new archive without being based on an export
-- Update channels.json file
-- Update user profiles
-- Download private messages

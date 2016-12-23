@@ -18,6 +18,8 @@ try:
 except ImportError:
     import json
 
+import json as std_json
+
 import yaml
 import pathlib
 import requests
@@ -169,6 +171,7 @@ def url_to_filename(url, _t_re=re.compile("\?t=[^&]*$")):
         url = url[:50] + "+" + sha256(url) + "+" + url[-50:]
     return url
 
+
 class Downloader(object):
     def __init__(self, path):
         self.counter = 0
@@ -292,13 +295,17 @@ class Downloader(object):
             ]))
 
 
-class Channel(object):
-    def __init__(self, archive, obj):
-        self.archive = archive
-        self.downloader = archive.downloader
-        self.slack = archive.slack
+class ItemBase(object):
+    def __init__(self, attr, slack, downloader, path, obj):
+        self.attr = attr
+        self.downloader = downloader
+        self.slack = slack
         self.__dict__.update(obj)
-        self.path = archive.path / ("_channel-%s" %(self.id, ))
+        self.path = path
+        self.pretty_name = (
+            "#" + obj["name"] if "name" in obj else
+            "im:" + obj["user"]
+        )
 
     def refresh(self):
         self._refresh_messages()
@@ -320,9 +327,6 @@ class Channel(object):
     def _refresh_messages(self):
         if not self.path.exists():
             self.path.mkdir()
-            name_symlink = self.archive.path / self.name
-            if not name_symlink.exists():
-                name_symlink.symlink_to(self.path.name)
 
         latest_archive = next(self.iter_archives(reverse=True), None)
         latest_ts = 0
@@ -330,8 +334,9 @@ class Channel(object):
             msgs = self.load_messages(latest_archive)
             latest_ts = msgs[-1]["ts"] if msgs else 0
 
+        slack = getattr(self.slack, self.attr)
         while True:
-            resp = self.slack.channels.history(
+            resp = slack.history(
                 channel=self.id,
                 oldest=latest_ts,
                 count=1000,
@@ -350,8 +355,8 @@ class Channel(object):
                     if day_archive.exists() else []
                 )
                 cur.extend(day_msgs)
-                print "#%s: %s new messages in #%s (saving to %s)" %(
-                    self.name, len(day_msgs), self.name, day_archive,
+                print "%s: %s new messages in %s (saving to %s)" %(
+                    self.pretty_name, len(day_msgs), self.pretty_name, day_archive,
                 )
                 for msg in day_msgs:
                     if "file" in msg or "attachments" in msg:
@@ -364,12 +369,182 @@ class Channel(object):
                 break
 
 
+class BaseArchiver(object):
+    name = None
+    item_class = ItemBase
+
+    def __init__(self, archive, path):
+        self.archive = archive
+        self.slack = archive.slack
+        self.json_file = path / ("%s.json" %(self.name, ))
+        self.path = path
+
+    def get_list(self):
+        if not self.json_file.exists():
+            return []
+        with self.json_file.open() as f:
+            return [
+                self.item_class(self.attr, self.slack, self.archive.downloader, self.path / o["id"], o)
+                for o in json.load(f)
+            ]
+
+    @property
+    def attr(self):
+        return self.name if self.name != "ims" else "im"
+
+    def update(self):
+        resp = getattr(self.slack, self.attr).list()
+        assert_successful(resp)
+
+        resp_field = (
+            "members" if self.name == "users" else
+            self.name
+        )
+        objs = resp.body[resp_field]
+        objs_json = std_json.dumps(objs, sort_keys=True)
+
+        try:
+            old_objs_json = self.json_file.open().read()
+        except IOError:
+            old_objs_json = None
+        if objs_json == old_objs_json:
+            return
+
+        if not self.path.exists():
+            self.path.mkdir()
+
+        ts = datetime.now().isoformat()
+        if self.json_file.exists():
+            archive_path = self.path / "_json-archive"
+            if not archive_path.exists():
+                archive_path.mkdir()
+            os.rename(
+                str(self.json_file),
+                str(archive_path / ("%s-%s.json" %(self.name, ts))),
+            )
+
+        with open_atomic(str(self.json_file)) as f:
+            f.write(unicode(objs_json))
+
+    def upgrade(self):
+        return
+        yield
+
+    def refresh(self):
+        self.update()
+        for obj in self.get_list():
+            obj.refresh()
+
+
+class ArchiveChannels(BaseArchiver):
+    name = "channels"
+
+    def upgrade(self):
+        archive_channels = self.archive.path / "channels.json"
+        if not archive_channels.is_symlink():
+            yield
+            if not self.path.exists():
+                self.path.mkdir()
+            archive_channels.rename(self.json_file)
+            archive_channels.symlink_to(os.path.relpath(
+                str(self.json_file),
+                str(archive_channels.parent),
+            ))
+
+        for chandir in self.archive.path.glob("_channel-*"):
+            yield
+            target = self.path / chandir.name.replace("_channel-", "")
+            print "moving %s -> %s" %(chandir, target)
+            chandir.rename(target)
+        for chan in self.get_list():
+            chan_name_dir = self.archive.path / chan.name
+            if chan_name_dir.is_symlink():
+                continue
+            yield
+            symlink_target = os.path.relpath(
+                str(chan.path),
+                str(chan_name_dir.parent),
+            )
+            print "linking %s -> %s" %(chan_name_dir, symlink_target)
+            chan_name_dir.rename(chan.path)
+            chan_name_dir.symlink_to(symlink_target)
+
+    def _fixup_symlinks(self):
+        for f in self.archive.path.iterdir():
+            if not f.is_symlink():
+                continue
+            if f.exists():
+                continue
+            target = os.readlink(str(f))
+            if "_channels/" in target or "_channel-" in target:
+                f.unlink()
+        for chan in self.get_list():
+            chan_name_dir = self.archive.path / chan.name
+            if chan_name_dir.exists():
+                continue
+            symlink_target = os.path.relpath(
+                str(chan.path),
+                str(chan_name_dir.parent),
+            )
+            chan_name_dir.symlink_to(symlink_target)
+
+    def refresh(self):
+        BaseArchiver.refresh(self)
+        self._fixup_symlinks()
+
+
+class ArchiveGroups(BaseArchiver):
+    name = "groups"
+
+
+class ArchiveIMs(BaseArchiver):
+    name = "ims"
+
+
+class ArchiveUsers(BaseArchiver):
+    name = "users"
+
+    def upgrade(self):
+        archive_users = self.archive.path / "users.json"
+        if archive_users.is_symlink() or not archive_users.exists():
+            return
+        yield
+        if not self.path.exists():
+            self.path.mkdir()
+        archive_users.rename(self.json_file)
+        archive_users.symlink_to(os.path.relpath(
+            str(self.json_file),
+            str(archive_users.parent),
+        ))
+
+    def refresh(self):
+        self.update()
+        archive_users = self.archive.path / "users.json"
+        if not archive_users.exists():
+            archive_users.symlink_to(os.path.relpath(
+                str(self.json_file),
+                str(self.archive.path),
+            ))
+
+
 class SlackArchive(object):
     def __init__(self, slack, dir):
         self.dir = dir
         self.slack = slack
         self.path = pathlib.Path(dir)
-        self._chansdir = self.path / "_channels.json"
+        self.users = ArchiveUsers(self, self.path / "_users")
+        self.channels = ArchiveChannels(self, self.path / "_channels")
+        private_dir = self.path / "_private" / "default"
+        if not private_dir.exists():
+            os.makedirs(str(private_dir))
+        self.groups = ArchiveGroups(self, private_dir / "_groups")
+        self.ims = ArchiveIMs(self, private_dir / "_ims")
+        self.subtypes = [
+            self.users,
+            self.channels,
+            self.groups,
+            self.ims,
+        ]
 
     def __enter__(self):
         self.downloader = Downloader(self.path / "_files")
@@ -377,6 +552,11 @@ class SlackArchive(object):
 
     def __exit__(self, *a):
         self.downloader.join()
+
+    def _upgrade(self):
+        for sub in self.subtypes:
+            for _ in sub.upgrade():
+                yield
 
     def needs_upgrade(self):
         for _ in self._upgrade():
@@ -387,22 +567,16 @@ class SlackArchive(object):
         for _ in self._upgrade():
             pass
 
-    @property
-    def channels(self):
-        with (self.path / "channels.json").open() as f:
-            return [Channel(self, o) for o in json.load(f)]
-
-    def _upgrade(self):
-        for chan in self.channels:
-            chan_name_dir = self.path / chan.name
-            if not chan_name_dir.is_symlink():
-                yield
-                chan_name_dir.rename(chan.path)
-                chan_name_dir.symlink_to(chan.path.name)
+    def download_all_files(self):
+        for sub in self.subtypes:
+            for obj in sub.get_list():
+                obj.download_all_files()
 
     def refresh(self):
-        for chan in self.channels:
-            chan.refresh()
+        for sub in self.subtypes:
+            print "%s..." %(sub.name, )
+            sub.refresh()
+
 
 def args_get_archives(args):
     for a in args.archive:
@@ -455,8 +629,7 @@ def main(argv):
                 archive.upgrade()
 
             if needs_upgrade or args.download_everything:
-                for chan in archive.channels:
-                    chan.download_all_files()
+                archive.download_all_files()
 
             archive.refresh()
 
