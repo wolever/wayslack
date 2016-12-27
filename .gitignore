@@ -20,3 +20,4 @@ dist/
 Icon?
 node_modules/
 test-*
+build/

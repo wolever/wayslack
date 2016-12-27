@@ -7,24 +7,36 @@ same format as Slack's team export.
 IMMATURITY WARNING
 ==================
 
-**WARNING**: this is still immature and incomplete. Currently only messages,
-files, and attachments are archived. New channels, channel renames, private
-messages, users, etc have not yet been implemented (see TODO.txt).
+**WARNING**: this is still immature and not completely tested. Right now it
+will archive:
+
+* Public messages
+* Private groups
+* Private messages
+* All uploaded files
+* All link previews
+* List of channels
+* List of users
+
+But it will likely be very slow for larger (100+ user or channel) teams,
+doesn't have any configuration options, and likely has bugs which will only be
+found with time.
+
 
 Getting Started
 ===============
 
-1. Install requirements::
+1. Install ``slack-archiver``::
 
-    $ pip install -r requirements.txt
+    $ pip install slack-archiver
 
-2. Export your team history: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
+2. Export your team history and unzip it: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
 
 3. Get a token from the bottom of: https://api.slack.com/web
 
-4. Run ``./slack-archiver.py path/to/export/directory`` to download all messages and files::
+4. Run ``slack-archiver path/to/export/directory`` to download all messages and files::
 
-    $ ./slack-archiver.py my-export/
+    $ slack-archiver my-export/
     API token for my-export/ (see https://api.slack.com/web): xoxp-1234-abcd
     Processing: my-export/
     Downloading https://.../image.jpg
@@ -40,3 +52,9 @@ Getting Started
       token: xoxp-1234-abcd # from the bottom of https://api.slack.com/web
     - dir: second-team/
       token: xoxp-9876-wxyz
+
+    $ slack-archiver
+    Processing: first-team
+    ...
+    Processing: second-team
+    ...

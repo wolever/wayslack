@@ -627,7 +627,8 @@ def args_get_archives(args):
             archive["dir"] = os.path.join(os.path.dirname(config_file), archive["dir"])
             yield archive
 
-def main(argv):
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
     args = parser.parse_args(argv)
 
     archives = list(args_get_archives(args))
