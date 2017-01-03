@@ -5,25 +5,6 @@ The Wayslack Machine: incrementally archive Slack messages and files using
 Slack's team export format.
 
 
-IMMATURITY WARNING
-==================
-
-**WARNING**: wayslack is still somewhat immature and not completely tested.
-Right now it will archive:
-
-* Public messages
-* Private groups
-* Private messages
-* All uploaded files
-* All link previews
-* List of channels
-* List of users
-
-But it will likely be very slow for larger (100+ user or channel) teams,
-doesn't have any configuration options, and likely has bugs which will only be
-found with time.
-
-
 Getting Started
 ===============
 
@@ -60,3 +41,22 @@ Getting Started
     ...
     Processing: second-team
     ...
+
+
+IMMATURITY WARNING
+==================
+
+**WARNING**: wayslack is still somewhat immature and not completely tested.
+Right now it will archive:
+
+* Public messages
+* Private groups
+* Private messages
+* All uploaded files
+* All link previews
+* List of channels
+* List of users
+
+But it will likely be very slow for larger (100+ user or channel) teams,
+doesn't have any configuration options, and likely has bugs which will only be
+found with time.
