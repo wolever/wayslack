@@ -31,11 +31,12 @@ Getting Started
 
     $ pip install wayslack
 
-2. Export your team history and unzip it: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
+2. (optional) Export your team history and unzip it: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
 
 3. Get a token from the bottom of: https://api.slack.com/web
 
-4. Run ``wayslack path/to/export/directory`` to download all messages and files::
+4. Run ``wayslack path/to/export/directory`` to create an archive if one
+   doesn't already exist, then download all messages and files::
 
     $ wayslack my-export/
     API token for my-export/ (see https://api.slack.com/web): xoxp-1234-abcd

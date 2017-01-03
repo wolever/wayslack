@@ -459,7 +459,7 @@ class ArchiveChannels(BaseArchiver):
 
     def upgrade(self):
         archive_channels = self.archive.path / "channels.json"
-        if not archive_channels.is_symlink():
+        if archive_channels.exists() and not archive_channels.is_symlink():
             yield
             if not self.path.exists():
                 self.path.mkdir()
@@ -497,6 +497,7 @@ class ArchiveChannels(BaseArchiver):
             target = os.readlink(str(f))
             if "_channels/" in target or "_channel-" in target:
                 f.unlink()
+
         for chan in self.get_list():
             chan_name_dir = self.archive.path / chan.name
             if chan_name_dir.exists():
@@ -506,6 +507,12 @@ class ArchiveChannels(BaseArchiver):
                 str(chan_name_dir.parent),
             )
             chan_name_dir.symlink_to(symlink_target)
+
+        archive_channels = self.archive.path / "channels.json"
+        if not archive_channels.exists():
+            if archive_channels.is_symlink():
+                archive_channels.unlink()
+            archive_channels.symlink_to("_channels/channels.json")
 
     def refresh(self):
         BaseArchiver.refresh(self)
@@ -575,6 +582,10 @@ class SlackArchive(object):
         self.downloader.join()
 
     def _upgrade(self):
+        if not self.path.exists():
+            yield
+            self.path.mkdir()
+
         for sub in self.subtypes:
             for _ in sub.upgrade():
                 yield
@@ -604,10 +615,9 @@ def args_get_archives(args):
         token, _, path = a.rpartition(":")
         path = os.path.expanduser(path)
         if not os.path.isdir(path):
-            print "ERROR: not a directory: %s" %(path, )
-            continue
+            print "Note: directory will be created: %s" %(path, )
         while not token:
-            token = raw_input("API token for %s (see: https://api.slack.com/web): ")
+            token = raw_input("API token for %s (see: https://api.slack.com/web): " %(path, ))
         yield {
             "token": token,
             "dir": path,
@@ -669,13 +679,13 @@ format.
 
 To get started:
 
-1. Export your team history: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
+1. (optional) Export your team history: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
 
 2. Get a token from the bottom of: https://api.slack.com/web
 
 3. Run `wayslack path/to/export/directory`
 
-And, optionally, create a configuration file:
+Optionally, create a configuration file:
 
 $ cat ~/.wayslack/config.yaml
 %s
