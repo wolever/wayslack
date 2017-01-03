@@ -10,20 +10,20 @@ os.chdir(os.path.dirname(sys.argv[0]) or ".")
 try:
     long_description = open("README.rst", "U").read()
 except IOError:
-    long_description = "See https://github.com/wolever/slack-archiver"
+    long_description = "See https://github.com/wolever/wayslack"
 
 setup(
-    name="slack-archiver",
+    name="wayslack",
     version="0.1.0",
-    url="https://github.com/wolever/slack-archiver",
+    url="https://github.com/wolever/wayslack",
     author="David Wolever",
     author_email="david@wolever.net",
-    description="Incrementall download messages, files, and links from Slack teams, using the same format as Slack's team export.",
+    description="The Wayslack Machine: incrementally archive Slack messages and files using Slack's team export format",
     long_description=long_description,
-    py_modules=["slack_archiver"],
+    py_modules=["wayslack"],
     entry_points={
         'console_scripts': [
-            'slack-archiver = slack_archiver:main',
+            'wayslack = wayslack:main',
         ],
     },
     install_requires=[],

@@ -1,14 +1,15 @@
-slack-archive.py
-================
+The Wayslack Machine
+====================
 
-Incrementally download messages, files, and links from Slack teams, using the
-same format as Slack's team export.
+The Wayslack Machine: incrementally archive Slack messages and files using
+Slack's team export format.
+
 
 IMMATURITY WARNING
 ==================
 
-**WARNING**: this is still immature and not completely tested. Right now it
-will archive:
+**WARNING**: wayslack is still somewhat immature and not completely tested.
+Right now it will archive:
 
 * Public messages
 * Private groups
@@ -26,17 +27,17 @@ found with time.
 Getting Started
 ===============
 
-1. Install ``slack-archiver``::
+1. Install ``wayslack``::
 
-    $ pip install slack-archiver
+    $ pip install wayslack
 
 2. Export your team history and unzip it: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
 
 3. Get a token from the bottom of: https://api.slack.com/web
 
-4. Run ``slack-archiver path/to/export/directory`` to download all messages and files::
+4. Run ``wayslack path/to/export/directory`` to download all messages and files::
 
-    $ slack-archiver my-export/
+    $ wayslack my-export/
     API token for my-export/ (see https://api.slack.com/web): xoxp-1234-abcd
     Processing: my-export/
     Downloading https://.../image.jpg
@@ -47,13 +48,13 @@ Getting Started
 
 5. Optionally, create a configuration file so multiple teams can be archived easily::
 
-    $ cat ~/.slack-archiver/config.yaml
+    $ cat ~/.wayslack/config.yaml
     - dir: first-team/      # relative to the config file
       token: xoxp-1234-abcd # from the bottom of https://api.slack.com/web
     - dir: second-team/
       token: xoxp-9876-wxyz
 
-    $ slack-archiver
+    $ wayslack
     Processing: first-team
     ...
     Processing: second-team

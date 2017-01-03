@@ -474,9 +474,10 @@ class ArchiveChannels(BaseArchiver):
             target = self.path / chandir.name.replace("_channel-", "")
             print "moving %s -> %s" %(chandir, target)
             chandir.rename(target)
+
         for chan in self.get_list():
             chan_name_dir = self.archive.path / chan.name
-            if chan_name_dir.is_symlink():
+            if chan_name_dir.is_symlink() or not chan_name_dir.exists():
                 continue
             yield
             symlink_target = os.path.relpath(
@@ -613,7 +614,7 @@ def args_get_archives(args):
             "name": path,
         }
 
-    default_config_file = os.path.expanduser("~/.slack-archiver/config.yaml")
+    default_config_file = os.path.expanduser("~/.wayslack/config.yaml")
     config_file = (
         args.config if args.config else
         default_config_file if os.path.exists(default_config_file) and not args.archive else
@@ -642,7 +643,7 @@ def main(argv=None):
         with SlackArchive(slack, a["dir"]) as archive:
             needs_upgrade = archive.needs_upgrade()
             if needs_upgrade:
-                print "Notice: slack-archiver needs to fiddle around with some symlinks."
+                print "Notice: wayslack needs to fiddle around with some symlinks."
                 print "This will cause some non-destructive changes to the directory."
                 res = raw_input("Continue? Y/n: ")
                 if res and res.lower()[:1] != "y":
@@ -672,14 +673,14 @@ To get started:
 
 2. Get a token from the bottom of: https://api.slack.com/web
 
-3. Run `./slack-archiver.py path/to/export/directory`
+3. Run `wayslack path/to/export/directory`
 
 And, optionally, create a configuration file:
 
-$ cat ~/.slack-archiver/config.yaml
+$ cat ~/.wayslack/config.yaml
 %s
 """ %(example_config_file, ))
-parser.add_argument("--config", "-c", help="Configuration file. Default: ~/.slack-archiver/config.yaml")
+parser.add_argument("--config", "-c", help="Configuration file. Default: ~/.wayslack/config.yaml")
 parser.add_argument("--download-everything", "-d", default=False, action="store_true", help="""
     Re-scan all messages for files to download (by default only new files are
     downloaded, except on the first run when all files are downloaded). This
