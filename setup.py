@@ -14,7 +14,7 @@ except IOError:
 
 setup(
     name="wayslack",
-    version="0.1.1",
+    version="0.1.2",
     url="https://github.com/wolever/wayslack",
     author="David Wolever",
     author_email="david@wolever.net",
@@ -26,7 +26,12 @@ setup(
             'wayslack = wayslack:main',
         ],
     },
-    install_requires=[],
+    install_requires=[
+        "PyYAML<4",
+        "pathlib<2",
+        "slacker<1",
+        "requests<3",
+    ],
     license="BSD",
     classifiers=[ x.strip() for x in """
         Development Status :: 3 - Alpha

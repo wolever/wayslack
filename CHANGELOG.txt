@@ -1,0 +1,3 @@
+0.1.2 (2017-01-04)
+    * Add CHANGELOG
+    * Move requirements to install_requires
