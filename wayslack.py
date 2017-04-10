@@ -617,7 +617,7 @@ def args_get_archives(args):
         if not os.path.isdir(path):
             print "Note: directory will be created: %s" %(path, )
         while not token:
-            token = raw_input("API token for %s (see: https://api.slack.com/web): " %(path, ))
+            token = raw_input("API token for %s (see: https://api.slack.com/custom-integrations/legacy-tokens): " %(path, ))
         yield {
             "token": token,
             "dir": path,
@@ -668,7 +668,7 @@ def main(argv=None):
 example_config_file = """---
 archives:
   - dir: path/to/slack/export # relative to this file
-    token: xoxp-1234-abcd # from the bottom of https://api.slack.com/web
+    token: xoxp-1234-abcd # from https://api.slack.com/custom-integrations/legacy-tokens
   - dir: some-other-export
     token: xoxp-9876-wxyz
 """
@@ -681,7 +681,7 @@ To get started:
 
 1. (optional) Export your team history: https://get.slack.help/hc/en-us/articles/201658943-Export-your-team-s-Slack-history
 
-2. Get a token from the bottom of: https://api.slack.com/web
+2. Get a legacy token from: https://api.slack.com/custom-integrations/legacy-tokens
 
 3. Run `wayslack path/to/export/directory`
 
@@ -699,8 +699,8 @@ parser.add_argument("--download-everything", "-d", default=False, action="store_
 parser.add_argument("archive", nargs="*", default=[], help="""
     Path to a Slack export directory. A token can be provided by prefixing
     the path with the token: "token:path" (for example,
-    "xoxp-1234-abcd:~/Downloads/foo"). Get a token from the bottom of
-    https://api.slack.com/web.
+    "xoxp-1234-abcd:~/Downloads/foo"). Get a token from
+    https://api.slack.com/custom-integrations/legacy-tokens.
 """)
 
 if __name__ == "__main__":
