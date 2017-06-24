@@ -28,6 +28,9 @@ from slacker import Slacker
 def ts2datetime(ts):
     return datetime.fromtimestamp(ts)
 
+def ts2ymd(ts):
+    return ts2datetime(float(ts)).strftime("%Y-%m-%d")
+
 def assert_successful(r):
     if not r.successful:
         raise AssertionError("Request failed: %s" %(r.error, ))
@@ -286,13 +289,16 @@ class Downloader(object):
             if not download_path.exists():
                 self.queue.put((url, str(download_path)))
 
+    def add_file(self, file_obj):
+        self.add(pluck(file_obj, [
+            "url_private",
+            "thumb_480",
+        ]))
+
     def add_message(self, msg):
-        file = msg.get("file")
-        if file:
-            self.add(pluck(file, [
-                "url_private",
-                "thumb_480",
-            ]))
+        file_obj = msg.get("file")
+        if file_obj:
+            self.add_file(file_obj)
 
         for att in msg.get("attachments", []):
             self.add(pluck(att, [
@@ -342,6 +348,13 @@ class ItemBase(object):
         with archive.open() as f:
             return json.load(f)
 
+    def _get_list(self, slack, latest_ts):
+        return slack.history(
+            channel=self.id,
+            oldest=latest_ts,
+            count=1000,
+        )
+
     def _refresh_messages(self):
         latest_archive = next(self.iter_archives(reverse=True), None)
         latest_ts = 0
@@ -351,11 +364,7 @@ class ItemBase(object):
 
         slack = getattr(self.slack, self.attr)
         while True:
-            resp = slack.history(
-                channel=self.id,
-                oldest=latest_ts,
-                count=1000,
-            )
+            resp = self._get_list(slack, latest_ts)
             assert_successful(resp)
 
             msgs = resp.body["messages"]
@@ -364,7 +373,6 @@ class ItemBase(object):
             if msgs and not self.path.exists():
                 self.path.mkdir()
 
-            ts2ymd = lambda ts: ts2datetime(float(ts)).strftime("%Y-%m-%d")
             for day, day_msgs in groupby(msgs, key=lambda m: ts2ymd(m["ts"])):
                 day_msgs = list(day_msgs)
                 day_archive = self.path / (day + ".json")
@@ -452,6 +460,10 @@ class BaseArchiver(object):
         self.update()
         for obj in self.get_list():
             obj.refresh()
+
+    def download_all_files(self):
+        for obj in self.get_list():
+            obj.download_all_files()
 
 
 class ArchiveChannels(BaseArchiver):
@@ -555,11 +567,122 @@ class ArchiveUsers(BaseArchiver):
             ))
 
 
+class ArchiveFiles(object):
+    name = "files"
+
+    def __init__(self, archive, path):
+        self.archive = archive
+        self.slack = archive.slack
+        self.path = path
+
+    def upgrade(self):
+        if next(self.path.glob("*http*"), None) is None:
+            return
+        yield
+        storage_dir = self.path / "storage"
+        if not storage_dir.exists():
+            storage_dir.mkdir()
+        for f in self.path.glob("*http*"):
+            f.rename(storage_dir / f.name)
+
+    def refresh(self):
+        self.status_file = self.path / "status.json"
+        self.status = (
+            {} if not self.status_file.exists() else
+            json.loads(self.status_file.open().read())
+        )
+
+        for files in self.iter_file_lists():
+            for file_obj in files:
+                self.archive.downloader.add_file(file_obj)
+                output_dir = self.path / ts2ymd(file_obj["created"])
+                if not output_dir.exists():
+                    output_dir.mkdir()
+                output_file = output_dir / (file_obj["id"] + ".json")
+                with open_atomic(str(output_file)) as f:
+                    json.dump(file_obj, f)
+
+    def update_status(self, x):
+        self.status.update(x)
+        with open_atomic(str(self.status_file)) as f:
+            json.dump(self.status, f)
+
+    def iter_file_lists(self):
+        """ Iterates over lists of files that need to be saved + downloaded """
+        oldest_file = None
+        newest_file = self.status.get("newest_file")
+
+        # There's no way to list files in reverse order, so instead we need
+        # to start reading files backwards until we hit an empty list, which
+        # means we've hit the oldest file. After that, start reading forward.
+        if not self.status.get("oldest_file"):
+            print "Walking backwards to find oldest file (this may take a little while)..."
+
+        while not self.status.get("oldest_file"):
+            resp = self.slack.files.list(
+                ts_to=self.status.get("ts_to_oldest") or 0,
+            )
+            assert_successful(resp)
+            sorted_files = sorted(resp.body["files"], key=lambda f: f["created"])
+            if not sorted_files or sorted_files[0] == oldest_file:
+                self.update_status({
+                    "oldest_file": oldest_file,
+                })
+                print "Oldest file found! Starting on new files..."
+                break
+            yield sorted_files
+            oldest_file = sorted_files[0]
+            newest_file = sorted_files[-1]
+            if oldest_file["created"] > self.status.get("ts_to_oldest", float("inf")):
+                raise AssertionError("uh oh %s > %s" %(
+                    oldest_file["created"],
+                    self.status.get("ts_to_oldest") or 0,
+                ))
+            self.update_status({
+                "ts_to_oldest": oldest_file["created"],
+                "ts_from_newest": max(newest_file["created"], self.status.get("ts_from_newest", 0)),
+            })
+
+        # Now start at the latest file we've seen before and walk forward!
+        while True:
+            resp = (
+                self.slack.files.list() if not self.status.get("ts_from_newest") else
+                self.slack.files.list(ts_from=self.status["ts_from_newest"])
+            )
+
+            assert_successful(resp)
+            sorted_files = sorted(resp.body["files"], key=lambda f: f["created"])
+            if not sorted_files or sorted_files[-1] == newest_file:
+                self.update_status({
+                    "newest_file": newest_file,
+                })
+                break
+            yield sorted_files
+            newest_file = sorted_files[-1]
+            if newest_file["created"] < self.status.get("ts_from_newest", float("inf")):
+                raise AssertionError("uh oh %s > %s" %(
+                    oldest_file["created"],
+                    self.status.get("ts_to_oldest", 0),
+                ))
+            self.update_status({
+                "ts_from_newest": newest_file["created"],
+            })
+
+    def download_all_files(self):
+        for dir in self.path.iterdir():
+            if not dir.is_dir() or dir.name == "storage":
+                continue
+            for file_file in dir.glob("*.json"):
+                with file_file.open() as f:
+                    self.archive.downloader.add_file(json.load(f))
+
+
 class SlackArchive(object):
     def __init__(self, slack, dir):
         self.dir = dir
         self.slack = slack
         self.path = pathlib.Path(dir)
+        self.files = ArchiveFiles(self, self.path / "_files")
         self.users = ArchiveUsers(self, self.path / "_users")
         self.channels = ArchiveChannels(self, self.path / "_channels")
         private_dir = self.path / "_private" / "default"
@@ -568,6 +691,7 @@ class SlackArchive(object):
         self.groups = ArchiveGroups(self, private_dir / "_groups")
         self.ims = ArchiveIMs(self, private_dir / "_ims")
         self.subtypes = [
+            self.files,
             self.users,
             self.channels,
             self.groups,
@@ -575,7 +699,7 @@ class SlackArchive(object):
         ]
 
     def __enter__(self):
-        self.downloader = Downloader(self.slack.api.token, self.path / "_files")
+        self.downloader = Downloader(self.slack.api.token, self.path / "_files" / "storage")
         return self
 
     def __exit__(self, *a):
@@ -601,8 +725,7 @@ class SlackArchive(object):
 
     def download_all_files(self):
         for sub in self.subtypes:
-            for obj in sub.get_list():
-                obj.download_all_files()
+            sub.download_all_files()
 
     def refresh(self):
         for sub in self.subtypes:
