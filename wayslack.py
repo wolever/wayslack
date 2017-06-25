@@ -8,10 +8,10 @@ import urllib
 import atexit
 import hashlib
 import argparse
+from Queue import Queue
 from threading import Thread
-from datetime import datetime
 from itertools import groupby
-from Queue import Queue, Empty
+from datetime import datetime, timedelta
 
 try:
     import ujson as json
@@ -23,7 +23,7 @@ import json as std_json
 import yaml
 import pathlib
 import requests
-from slacker import Slacker
+from slacker import Slacker, Error
 
 def ts2datetime(ts):
     return datetime.fromtimestamp(ts)
@@ -34,6 +34,26 @@ def ts2ymd(ts):
 def assert_successful(r):
     if not r.successful:
         raise AssertionError("Request failed: %s" %(r.error, ))
+
+def parse_age_str(s):
+    match = re.search("(\d+)\s(m|d)", s)
+    if not match:
+        return None
+    count_str, age_str = match.groups()
+    try:
+        count = int(count_str)
+    except ValueError:
+        return None
+
+    multiplier = {"m": 30, "d": 1}.get(age_str)
+    if not multiplier:
+        return None
+
+    return datetime.now() - timedelta(days=count * multiplier)
+
+
+VERBOSE = False
+
 
 class open_atomic(object):
     """
@@ -175,6 +195,59 @@ def url_to_filename(url, _t_re=re.compile("\?t=[^&]*$")):
     return url
 
 
+class Threadpool(object):
+    _stop = object()
+
+    def __init__(self, func, thread_count=10, queue_size=1000):
+        self._func = func
+        self._queue = Queue(maxsize=queue_size)
+        self._stop = False
+        self._threads = [
+            Thread(target=self._run_thread, args=(idx, ))
+            for idx in range(thread_count)
+        ]
+        self._thread_current_item = [
+            self._stop for _ in self._threads
+        ]
+        for t in self._threads:
+            t.start()
+
+    def put(self, item):
+        self._queue.put(item)
+
+    def qsize(self):
+        return self._queue.qsize()
+
+    def stop(self):
+        for _ in self._threads:
+            self._queue.put(self._stop)
+
+    def join(self):
+        self.stop()
+        for thread in self._threads:
+            thread.join()
+
+    def _run_thread(self, idx):
+        while not self._stop:
+            try:
+                item = self._queue.get()
+                if item is self._stop:
+                    return
+                self._thread_current_item[idx] = item
+                self._func(self._thread_current_item[idx])
+            finally:
+                self._thread_current_item[idx] = self._stop
+
+    def iter_incomplete(self):
+        for item in self._thread_current_item:
+            if item is not self._stop:
+                yield item
+        for item in self._queue.queue:
+            if item is self._stop:
+                continue
+            yield item
+
+
 class Downloader(object):
     def __init__(self, token, path):
         self.counter = 0
@@ -187,107 +260,104 @@ class Downloader(object):
             shutil.rmtree(str(self.lockdir))
         self.lockdir.mkdir()
         self.pending_file = self.path / "pending.json"
-        self.queue = Queue(maxsize=5000)
+        self.pool = Threadpool(self._downloader)
         if self.pending_file.exists():
             pending = json.loads(self.pending_file.open().read())
             for item in pending:
-                self.queue.put_nowait(item)
-        self.threads = [
-            Thread(target=self._downloader)
-            for _ in range(10)
-        ]
-        for t in self.threads:
-            t.start()
+                self.pool.put(item)
         atexit.register(self._write_pending)
 
     def _write_pending(self):
-        to_write = []
-        while True:
-            try:
-                item = self.queue.get_nowait()
-                if item is None:
-                    continue
-                to_write.append(item)
-            except Empty:
-                break
+        try:
+            self.pool.join()
+        finally:
+            to_write = list(self.pool.iter_incomplete())
+            if not to_write:
+                try:
+                    self.pending_file.unlink()
+                except OSError:
+                    pass
+                return
 
-        if not to_write:
-            try:
-                self.pending_file.unlink()
-            except OSError:
-                pass
-            return
-
-        with open_atomic(str(self.pending_file)) as f:
-            json.dump(to_write, f)
+            with open_atomic(str(self.pending_file)) as f:
+                json.dump(to_write, f)
 
     def join(self):
-        for thread in self.threads:
-            self.queue.put(None)
-        for thread in self.threads:
-            thread.join()
+        self.pool.join()
 
-    def _downloader(self):
-        while True:
-            lockdir = None
+    def _downloader(self, item):
+        lockdir = None
+        try:
+            url, target = item
+            if os.path.exists(target):
+                return
+            base, joiner, name = target.rpartition("/")
+            lockdir = self.lockdir / name
             try:
-                item = self.queue.get()
-                if item is None:
-                    return
-                url, target = item
-                if os.path.exists(target):
-                    continue
-                base, joiner, name = target.rpartition("/")
-                lockdir = self.lockdir / name
-                try:
-                    lockdir.mkdir()
-                except OSError:
-                    lockdir = None
-                    continue
+                lockdir.mkdir()
+            except OSError:
+                lockdir = None
+                return
 
-                meta_file = base + joiner + "meta-" + name + ".txt"
-                try:
-                    res = requests.get(
-                        url,
-                        headers={"Authorization": "Bearer %s" %(self.token, )},
-                        stream=True,
-                        timeout=60,
-                    )
-                except Exception as e:
-                    print "Error:", e
-                    with open_atomic(meta_file) as meta:
-                        meta.write("999\nException: %r" %(e, ))
-                    continue
-                with open_atomic(meta_file) as meta, open_atomic(target) as f:
-                    meta.write("%s\n%s" %(
-                        res.status_code,
-                        "\n".join(
-                            "%s: %s" %(key, res.headers[key])
-                            for key
-                            in res.headers
-                        ),
-                    ))
-                    for chunk in res.iter_content(4096):
-                        f.write(chunk)
-                self.counter += 1
-                print "Downloaded %s (%s left): %s" %(
-                    self.counter,
-                    self.queue.qsize(),
+            meta_file = base + joiner + "meta-" + name + ".txt"
+            try:
+                res = requests.get(
                     url,
+                    headers={"Authorization": "Bearer %s" %(self.token, )},
+                    stream=True,
+                    timeout=60,
                 )
-            except:
-                if item is not None:
-                    self.queue.put(item)
-                raise
-            finally:
-                if lockdir is not None:
-                    lockdir.rmdir()
+            except Exception as e:
+                print "Error:", e
+                with open_atomic(meta_file) as meta:
+                    meta.write("999\nException: %r" %(e, ))
+                return
+            with open_atomic(meta_file) as meta, open_atomic(target) as f:
+                meta.write("%s\n%s" %(
+                    res.status_code,
+                    "\n".join(
+                        "%s: %s" %(key, res.headers[key])
+                        for key
+                        in res.headers
+                    ),
+                ))
+                for chunk in res.iter_content(4096):
+                    f.write(chunk)
+            self.counter += 1
+            print "Downloaded %s (%s left): %s" %(
+                self.counter,
+                self.pool.qsize(),
+                url,
+            )
+        except:
+            if item is not None:
+                self.pool.put(item)
+            raise
+        finally:
+            if lockdir is not None:
+                lockdir.rmdir()
+
+    def _download_path(self, url):
+        return self.path / url_to_filename(url)
 
     def add(self, urls):
         for _, url in urls:
-            download_path = self.path / url_to_filename(url)
+            download_path = self._download_path(url)
             if not download_path.exists():
-                self.queue.put((url, str(download_path)))
+                self.pool.put((url, str(download_path)))
+
+    def is_file_missing(self, file_obj):
+        download_path = self._download_path(file_obj["url_private"])
+        if not download_path.exists():
+            return "does not exist", download_path
+        size = download_path.stat().st_size
+        if size != file_obj["size"]:
+            msg = "size does not match (actual size %s != expected size %s)" %(
+                size,
+                file_obj["size"],
+            )
+            return msg, download_path
+        return None, download_path
 
     def add_file(self, file_obj):
         self.add(pluck(file_obj, [
@@ -668,20 +738,79 @@ class ArchiveFiles(object):
                 "ts_from_newest": newest_file["created"],
             })
 
-    def download_all_files(self):
+    def _iter_archive_dirs(self):
+        name_re = re.compile("\d{4}-\d{2}-\d{2}")
         for dir in self.path.iterdir():
-            if not dir.is_dir() or dir.name == "storage":
+            if name_re.match(dir.name) and dir.is_dir():
+                yield dir
+
+    def _iter_files_in_dir(self, dir):
+        for file_file in dir.glob("*.json"):
+            with file_file.open() as f:
+                yield file_file, json.load(f)
+
+    def download_all_files(self):
+        for dir in self._iter_archive_dirs():
+            for _, file_obj in self._iter_files_in_dir(dir):
+                self.archive.downloader.add_file(file_obj)
+
+    def delete_old_files(self, date, confirm):
+        date_str = date.strftime("%Y-%m-%d")
+        dry_run = (
+            "" if confirm else
+            " (PREVIEW ONLY; use '--confirm-delete' to actaully delete these files)"
+        )
+        print "Deleting files created before %s... %s" %(date_str, dry_run)
+
+        def delete_file(x):
+            file_file, file_obj = x
+            try:
+                res = self.slack.files.delete(file_obj["id"])
+                assert_successful(res)
+            except Error as e:
+                if e.message != "file_deleted":
+                    raise
+            file_obj["_wayslack_deleted"] = True
+            with open_atomic(str(file_file)) as f:
+                json.dump(file_obj, f)
+
+        pool = Threadpool(delete_file, queue_size=1, thread_count=10)
+        count = 0
+        skipped = 0
+        for dir in self.path.iterdir():
+            if dir.name >= date_str:
                 continue
-            for file_file in dir.glob("*.json"):
-                with file_file.open() as f:
-                    self.archive.downloader.add_file(json.load(f))
+            for file_file, file_obj in self._iter_files_in_dir(dir):
+                if file_obj.get("_wayslack_deleted"):
+                    continue
+                err, file_path = self.archive.downloader.is_file_missing(file_obj)
+                if err:
+                    skipped += 1
+                    if VERBOSE:
+                        print "WARNING: %s: %s" %(
+                            str(file_file),
+                            err,
+                        )
+                        print "         File:", file_path
+                        print "          URL:", file_obj["url_private"]
+                    continue
+                count += 1
+                if confirm:
+                    if count % 10 == 0:
+                        print "Deleted:", count
+                    pool.put((file_file, file_obj))
+        pool.join()
+        print "Deleted files: %s%s" %(count, dry_run)
+        if skipped and count:
+            print "Skipped files: %s (this is 'normal'. See: https://stackoverflow.com/q/44742164/71522; use --verbose for more info)" %(skipped, )
 
 
 class SlackArchive(object):
-    def __init__(self, slack, dir):
-        self.dir = dir
+    def __init__(self, slack, opts):
+        self.opts = opts
+        self.dir = opts["dir"]
         self.slack = slack
-        self.path = pathlib.Path(dir)
+        self.path = pathlib.Path(self.dir)
         self.files = ArchiveFiles(self, self.path / "_files")
         self.users = ArchiveUsers(self, self.path / "_users")
         self.channels = ArchiveChannels(self, self.path / "_channels")
@@ -732,6 +861,15 @@ class SlackArchive(object):
             print "%s..." %(sub.name, )
             sub.refresh()
 
+    def delete_old_files(self, confirm=False):
+        age_str = self.opts.get("delete_old_files")
+        if not age_str:
+            return
+        age = parse_age_str(age_str)
+        if not age:
+            raise AssertionError("Invalid age for delete_old_files: %r" %(age_str, ))
+        self.files.delete_old_files(age, confirm)
+
 
 def args_get_archives(args):
     for a in args.archive:
@@ -762,18 +900,20 @@ def args_get_archives(args):
             yield archive
 
 def main(argv=None):
+    global VERBOSE
     argv = sys.argv[1:] if argv is None else argv
     args = parser.parse_args(argv)
+    VERBOSE = args.verbose
 
     archives = list(args_get_archives(args))
     if not archives:
         print "ERROR: no archives specified. Specify an archive or a config file."
         return 1
-    
+
     for a in archives:
         print "Processing:", a["name"]
         slack = Slacker(a["token"])
-        with SlackArchive(slack, a["dir"]) as archive:
+        with SlackArchive(slack, a) as archive:
             needs_upgrade = archive.needs_upgrade()
             if needs_upgrade:
                 print "Notice: wayslack needs to fiddle around with some symlinks."
@@ -786,13 +926,23 @@ def main(argv=None):
             if needs_upgrade or args.download_everything:
                 archive.download_all_files()
 
-            archive.refresh()
+            #archive.refresh()
+        archive.delete_old_files(args.confirm_delete)
+
 
 example_config_file = """---
 archives:
-  - dir: path/to/slack/export # relative to this file
-    token: xoxp-1234-abcd # from https://api.slack.com/custom-integrations/legacy-tokens
-  - dir: some-other-export
+  - dir: path/to/slack/first-export # path is relative to this file
+    # Get token from: https://api.slack.com/custom-integrations/legacy-tokens
+    token: xoxp-1234-abcd
+    # Delete files from Slack if they're more than 60 days old (useful for
+    # free Slack channels which have a file limit).
+    # Files will only be deleted from Slack if:
+    # - They exist in the archive (_files/storage/...)
+    # - wayslack is run with --confirm-delete
+    # Otherwise a message will be printed but files will not be deleted.
+    delete_old_files: 60 days
+  - dir: second-export
     token: xoxp-9876-wxyz
 """
 
@@ -814,10 +964,15 @@ $ cat ~/.wayslack/config.yaml
 %s
 """ %(example_config_file, ))
 parser.add_argument("--config", "-c", help="Configuration file. Default: ~/.wayslack/config.yaml")
+parser.add_argument("--verbose", "-v", action="store_true")
 parser.add_argument("--download-everything", "-d", default=False, action="store_true", help="""
     Re-scan all messages for files to download (by default only new files are
     downloaded, except on the first run when all files are downloaded). This
     option generally isn't necessary.
+""")
+parser.add_argument("--confirm-delete", "-D", default=False, action="store_true", help="""
+    Confirm that Wayslack should delete old files from slack (see the
+    delete_old_files configuration option).
 """)
 parser.add_argument("archive", nargs="*", default=[], help="""
     Path to a Slack export directory. A token can be provided by prefixing
