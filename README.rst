@@ -72,6 +72,112 @@ generated when deleting files (and, obviously, those files won't be deleted).
 
 __ https://stackoverflow.com/q/44742164/71522
 
+Exporting Slack Messages to SQL (PostgreSQL)
+============================================
+
+Also included in this repository (although not in the installer yet) is
+``wayslack2sql.py``, which will export a Wayslack archive to a PostgreSQL
+database::
+
+    $ pip install sqlalchemy
+    ...
+    $ createdb wayslack
+    $ ./wayslack2sql.py postgres://localhost/wayslack ~/.wayslack/your-team
+
+(note: ``wayslack2sql.py`` isn't especially polished yet)
+
+The schema is straightforward and closely matches Slack's JSON format::
+
+    -- Channels (public, private, and IMs)
+    CREATE TABLE ws_channel (
+        id VARCHAR(64) PRIMARY KEY NOT NULL, -- Slack channel ID
+        kind VARCHAR(16), -- 'channel', 'im', or 'group'
+        created TIMESTAMP WITHOUT TIME ZONE,
+        creator VARCHAR(64), -- Slack creator ID
+        members VARCHAR(64)[],
+        name VARCHAR,
+        purpose JSON,
+        topic JSON,
+        ..., -- See schema in wayslack2sql.py for all columns
+        _original JSON,
+    )
+
+    -- Users
+    CREATE TABLE ws_user (
+        id VARCHAR(64) PRIMARY KEY NOT NULL,
+        name VARCHAR,
+        real_name VARCHAR,
+        ..., -- See schema in wayslack2sql.py for all columns
+    )
+
+    -- Files
+    CREATE TABLE ws_file (
+        id VARCHAR(64) PRIMARY KEY NOT NULL,
+        "user" VARCHAR(64), -- Slack ID
+        title VARCHAR,
+        name VARCHAR,
+        size INTEGER, -- note: can be wrong sometimes
+        mimetype VARCHAR,
+        url_private VARCHAR,
+        url_private_download VARCHAR,
+        ..., -- See schema in wayslack2sql.py for all columns
+        _wayslack_deleted BOOLEAN, -- If Wayslack has deleted this file from Slack
+        _original JSON,
+    )
+
+    -- Messages
+    CREATE TABLE ws_msg (
+        id SERIAL PRIMARY KEY NOT NULL, -- autoincrement integer primary key
+        ts TIMESTAMP WITHOUT TIME ZONE,
+        "user" VARCHAR(64),
+        type VARCHAR(16),
+        subtype VARCHAR(32),
+        text VARCHAR,
+        reactions JSON,
+        attachments JSON,
+        ..., -- See schema in wayslack2sql.py for all columns
+        _original JSON,
+    )
+
+For example, to see who sends the most messages, use::
+
+    with mc as (
+        select
+            "user",
+            sum(length(to_tsvector(text))) as word_count,
+            count(*) as msg_count
+        from ws_msg
+        group by "user"
+    ),
+    report as (
+        select
+            name,
+            word_count,
+            msg_count,
+            round((word_count / msg_count::numeric), 2) as words_per_msg
+        from mc
+        join ws_user as u on u.id = mc."user"
+        order by msg_count desc
+    )
+    select *
+    from report
+
+Returns::
+
+    wayslack=# ...;
+         name      | word_count | msg_count | words_per_msg
+    ---------------+------------+-----------+---------------
+     jane          |      34432 |      7489 |          4.60
+     wolever       |      22871 |      4787 |          4.78
+     alex          |      19977 |      4346 |          4.60
+     smith         |      12090 |      2132 |          5.67
+     luke          |      10099 |      1852 |          5.45
+     ...
+
+Hint: `pg-histogram`__ is especially useful for visualizing these data.
+
+__ https://github.com/wolever/pg-histogram
+
 IMMATURITY WARNING
 ==================
 
