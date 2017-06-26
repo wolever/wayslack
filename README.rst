@@ -5,7 +5,7 @@ The Wayslack Machine: incrementally archive Slack messages and files using
 Slack's team export format.
 
 Wayslack can also delete old files from Slack, freeing up storage space
-forusers on the free tier. See the ``delete_old_files`` option.
+for users on the free tier. See the ``delete_old_files`` option.
 
 
 Getting Started
