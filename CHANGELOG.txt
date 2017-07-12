@@ -1,3 +1,6 @@
+0.2.1 (2017-07-12)
+    * Fix bug where messages weren't archived (oops)
+
 0.2.0 (2017-06-24)
     * Explicitly download files to _files (you'll be prompted to update the
       storage format the first time you run wayslack)

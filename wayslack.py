@@ -926,7 +926,7 @@ def main(argv=None):
             if needs_upgrade or args.download_everything:
                 archive.download_all_files()
 
-            #archive.refresh()
+            archive.refresh()
         archive.delete_old_files(args.confirm_delete)
 
 
