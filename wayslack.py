@@ -54,6 +54,37 @@ def parse_age_str(s):
 
 VERBOSE = False
 
+def to_str(obj, encoding='utf-8', **encode_args):
+    r"""
+    Returns a ``str`` of ``obj``, encoding using ``encoding`` if necessary. For
+    example::
+        >>> some_str = b"\xff"
+        >>> some_unicode = u"\u1234"
+        >>> some_exception = Exception(u'Error: ' + some_unicode)
+        >>> r(to_str(some_str))
+        b'\xff'
+        >>> r(to_str(some_unicode))
+        b'\xe1\x88\xb4'
+        >>> r(to_str(some_exception))
+        b'Error: \xe1\x88\xb4'
+        >>> r(to_str([42]))
+        b'[42]'
+    See source code for detailed semantics.
+    """
+    # Note: On py3, ``b'x'.__str__()`` returns ``"b'x'"``, so we need to do the
+    # explicit check first.
+    if isinstance(obj, str):
+        return obj
+
+    # We coerce to unicode if '__unicode__' is available because there is no
+    # way to specify encoding when calling ``str(obj)``, so, eg,
+    # ``str(Exception(u'\u1234'))`` will explode.
+    if isinstance(obj, unicode) or hasattr(obj, "__unicode__"):
+        # Note: unicode(u'foo') is O(1) (by experimentation)
+        return unicode(obj).encode(encoding, **encode_args)
+
+    return str(obj)
+
 
 class open_atomic(object):
     """
@@ -254,7 +285,7 @@ class Downloader(object):
         self.token = token
         self.path = path
         if not path.exists():
-            self.path.mkdir()
+            self.path.mkdir(parents=True)
         self.lockdir = self.path / "_lockdir"
         if self.lockdir.exists():
             shutil.rmtree(str(self.lockdir))
@@ -370,7 +401,7 @@ class Downloader(object):
         if file_obj:
             self.add_file(file_obj)
 
-        for att in msg.get("attachments", []):
+        for att in msg.get("attachments") or []:
             self.add(pluck(att, [
                 "service_icon",
                 "thumb_url",
@@ -558,7 +589,7 @@ class ArchiveChannels(BaseArchiver):
             chandir.rename(target)
 
         for chan in self.get_list():
-            chan_name_dir = self.archive.path / chan.name
+            chan_name_dir = self.archive.path / to_str(chan.name)
             if chan_name_dir.is_symlink() or not chan_name_dir.exists():
                 continue
             yield
@@ -581,7 +612,7 @@ class ArchiveChannels(BaseArchiver):
                 f.unlink()
 
         for chan in self.get_list():
-            chan_name_dir = self.archive.path / chan.name
+            chan_name_dir = self.archive.path / to_str(chan.name)
             if chan_name_dir.exists():
                 continue
             symlink_target = os.path.relpath(
@@ -768,15 +799,18 @@ class ArchiveFiles(object):
                 res = self.slack.files.delete(file_obj["id"])
                 assert_successful(res)
             except Error as e:
-                if e.message != "file_deleted":
-                    raise
+                print "Error deleting file %r: %s" %(file_obj["id"], e.message)
+                self._error_count += 1
+                return
+            self._deleted_count += 1
             file_obj["_wayslack_deleted"] = True
             with open_atomic(str(file_file)) as f:
                 json.dump(file_obj, f)
 
         pool = Threadpool(delete_file, queue_size=1, thread_count=10)
-        count = 0
-        skipped = 0
+        self._deleted_count = 0
+        self._skipped_count = 0
+        self._error_count = 0
         for dir in self.path.iterdir():
             if dir.name >= date_str:
                 continue
@@ -785,7 +819,7 @@ class ArchiveFiles(object):
                     continue
                 err, file_path = self.archive.downloader.is_file_missing(file_obj)
                 if err:
-                    skipped += 1
+                    self._skipped_count += 1
                     if VERBOSE:
                         print "WARNING: %s: %s" %(
                             str(file_file),
@@ -794,15 +828,56 @@ class ArchiveFiles(object):
                         print "         File:", file_path
                         print "          URL:", file_obj["url_private"]
                     continue
-                count += 1
+                self._deleted_count += 1
                 if confirm:
-                    if count % 10 == 0:
-                        print "Deleted:", count
+                    if (self._deleted_count + self._error_count + self._skipped_count) % 10 == 0:
+                        print self._deleted_msg()
                     pool.put((file_file, file_obj))
         pool.join()
-        print "Deleted files: %s%s" %(count, dry_run)
-        if skipped and count:
-            print "Skipped files: %s (this is 'normal'. See: https://stackoverflow.com/q/44742164/71522; use --verbose for more info)" %(skipped, )
+        print "Deleted files: %s%s" %(self._deleted_count, dry_run)
+        if self._skipped_count and self._deleted_count:
+            print "Skipped files: %s (this is 'normal'. See: https://stackoverflow.com/q/44742164/71522; use --verbose for more info)" %(self._skipped_count, )
+        if self._error_count:
+            print "Errors: %s" %(self._error_count, )
+
+    def _deleted_msg(self):
+        msg = "Deleted files: %s" %(self._deleted_count, )
+        suffix = []
+        if self._error_count:
+            suffix.append("errors: %s" %(self._error_count, ))
+        if self._skipped_count:
+            suffix.append("skipped: %s" %(self._skipped_count, ))
+        if suffix:
+            msg = "%s (%s)" %(msg, ", ".join(suffix))
+        return msg
+
+
+class EmojiItem(object):
+    def __init__(self, slack, downloader, name, url):
+        self.downloader = downloader
+        self.slack = slack
+        self.name = name
+        self.url = url
+
+    def refresh(self):
+        self.download_all_files()
+
+    def download_all_files(self):
+        if self.url.startswith("http"):
+            self.downloader.add([(None, self.url)])
+
+
+class ArchiveEmoji(BaseArchiver):
+    name = "emoji"
+
+    def get_list(self):
+        if not self.json_file.exists():
+            return []
+        with self.json_file.open() as f:
+            return [
+                EmojiItem(self.slack, self.archive.downloader, k, v)
+                for (k, v) in json.load(f).iteritems()
+            ]
 
 
 class SlackArchive(object):
@@ -811,6 +886,7 @@ class SlackArchive(object):
         self.dir = opts["dir"]
         self.slack = slack
         self.path = pathlib.Path(self.dir)
+        self.emoji = ArchiveEmoji(self, self.path / "_emoji")
         self.files = ArchiveFiles(self, self.path / "_files")
         self.users = ArchiveUsers(self, self.path / "_users")
         self.channels = ArchiveChannels(self, self.path / "_channels")
@@ -820,6 +896,7 @@ class SlackArchive(object):
         self.groups = ArchiveGroups(self, private_dir / "_groups")
         self.ims = ArchiveIMs(self, private_dir / "_ims")
         self.subtypes = [
+            self.emoji,
             self.files,
             self.users,
             self.channels,
