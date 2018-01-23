@@ -61,15 +61,12 @@ def insert(table, defaults, values=None):
 
     defaults.pop('_original', None)
 
-    to_insert = [
-        fix_timestamps_inplace(extend(
+    for v in values:
+        engine.execute(table.insert(), fix_timestamps_inplace(extend(
             {'_original': v},
             defaults,
             v,
-        )) for v in values
-    ]
-    engine.execute(table.insert(), to_insert)
-
+        )))
 
 metadata = sa.MetaData()
 
@@ -154,6 +151,7 @@ File = sa.Table('ws_file', metadata,
 Message = sa.Table('ws_msg', metadata,
     sa.Column('id', sa.Integer(), primary_key=True),
     sa.Column('ts', sa.DateTime(timezone=False)),
+    sa.Column('channel', SlackID, index=True),
     sa.Column('user', SlackID, index=True),
     sa.Column('type', sa.String(16)),
     sa.Column('subtype', sa.String(32)),
@@ -164,6 +162,10 @@ Message = sa.Table('ws_msg', metadata,
     sa.Column('attachments', sa.JSON(none_as_null=True)),
     sa.Column('_original', sa.JSON(none_as_null=True)),
 )
+
+if len(sys.argv) != 3:
+    print __doc__
+    sys.exit(1)
 
 engine = sa.create_engine(sys.argv[1])
 basedir = pathlib.Path(sys.argv[2])
@@ -211,10 +213,13 @@ def iter_messages():
         for chandir in basedir.glob(glob):
             if not chandir.is_dir():
                 continue
+            channel = chandir.name
             for day_file in chandir.iterdir():
                 if not day_file.name.endswith('.json'):
                     continue
                 res = load_json(day_file)
+                for item in res:
+                    item["channel"] = channel
                 count += len(res)
                 yield res
         print '%10s: %s' %(name, count)
