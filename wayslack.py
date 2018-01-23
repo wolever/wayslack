@@ -3,6 +3,7 @@
 import os
 import re
 import sys
+import time
 import shutil
 import urllib
 import atexit
@@ -23,6 +24,7 @@ import json as std_json
 import yaml
 import pathlib
 import requests
+from requests.exceptions import HTTPError
 from slacker import Slacker, Error
 
 def ts2datetime(ts):
@@ -450,11 +452,18 @@ class ItemBase(object):
             return json.load(f)
 
     def _get_list(self, slack, latest_ts):
-        return slack.history(
-            channel=self.id,
-            oldest=latest_ts,
-            count=1000,
-        )
+        while True:
+            try:
+                return slack.history(
+                    channel=self.id,
+                    oldest=latest_ts,
+                    count=1000,
+                )
+            except HTTPError as e:
+                if "Too Many Requests" not in str(e):
+                    raise
+                print "Backing off after error (will retry in 5 seconds):", e
+                time.sleep(5)
 
     def _refresh_messages(self):
         latest_archive = next(self.iter_archives(reverse=True), None)
