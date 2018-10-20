@@ -62,11 +62,14 @@ def insert(table, defaults, values=None):
     defaults.pop('_original', None)
 
     for v in values:
-        engine.execute(table.insert(), fix_timestamps_inplace(extend(
-            {'_original': v},
-            defaults,
-            v,
-        )))
+        try:
+            engine.execute(table.insert(), fix_timestamps_inplace(extend(
+                {'_original': v},
+                defaults,
+                v,
+            )))
+        except Exception as e:
+            print e
 
 metadata = sa.MetaData()
 

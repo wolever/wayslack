@@ -282,7 +282,7 @@ class Threadpool(object):
 
 
 class Downloader(object):
-    def __init__(self, token, path):
+    def __init__(self, token, path, no_download=False):
         self.counter = 0
         self.token = token
         self.path = path
@@ -299,6 +299,7 @@ class Downloader(object):
             for item in pending:
                 self.pool.put(item)
         atexit.register(self._write_pending)
+        self.no_download = no_download
 
     def _write_pending(self):
         try:
@@ -374,6 +375,8 @@ class Downloader(object):
         return self.path / url_to_filename(url)
 
     def add(self, urls):
+        if self.no_download:
+            return
         for _, url in urls:
             download_path = self._download_path(url)
             if not download_path.exists():
@@ -893,6 +896,7 @@ class SlackArchive(object):
     def __init__(self, slack, opts):
         self.opts = opts
         self.dir = opts["dir"]
+        self.download_files = opts.get("download_files", True)
         self.slack = slack
         self.path = pathlib.Path(self.dir)
         self.emoji = ArchiveEmoji(self, self.path / "_emoji")
@@ -914,7 +918,11 @@ class SlackArchive(object):
         ]
 
     def __enter__(self):
-        self.downloader = Downloader(self.slack.api.token, self.path / "_files" / "storage")
+        self.downloader = Downloader(
+            self.slack.api.token,
+            self.path / "_files" / "storage",
+            no_download=not self.download_files,
+        )
         return self
 
     def __exit__(self, *a):
@@ -1030,6 +1038,8 @@ archives:
     delete_old_files: 60 days
   - dir: second-export
     token: xoxp-9876-wxyz
+    # Do not download any files; only download conversation text.
+    download_files: false
 """
 
 parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter, description="""
