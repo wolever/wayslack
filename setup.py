@@ -14,7 +14,7 @@ except IOError:
 
 setup(
     name="wayslack",
-    version="0.3.0",
+    version="0.3.1",
     url="https://github.com/wolever/wayslack",
     author="David Wolever",
     author_email="david@wolever.net",
