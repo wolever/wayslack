@@ -10,6 +10,7 @@ import atexit
 import hashlib
 import argparse
 from Queue import Queue
+from random import random
 from threading import Thread
 from itertools import groupby
 from datetime import datetime, timedelta
@@ -52,6 +53,25 @@ def parse_age_str(s):
         return None
 
     return datetime.now() - timedelta(days=count * multiplier)
+
+def slack_retry(method, *args, **kwargs):
+    attempt = 1
+    while True:
+        try:
+            return method(*args, **kwargs)
+        except HTTPError as e:
+            if "Too Many Requests" not in str(e):
+                raise
+            # Note: introduce backoff + random delay so concurrent requests don't spam
+            delay = int(int(e.response.headers["Retry-After"]) * (2 ** (attempt * (1 * random()))))
+            delay = max(min, 30)
+            if VERBOSE:
+                print "Slack reported Too Many Requests for %r (retrying in %s seconds)" %(
+                    method,
+                    delay,
+                )
+            time.sleep(delay)
+            attempt += 1
 
 
 VERBOSE = False
@@ -355,8 +375,16 @@ class Downloader(object):
                         in res.headers
                     ),
                 ))
+                hash = hashlib.md5()
                 for chunk in res.iter_content(4096):
+                    hash.update(chunk)
                     f.write(chunk)
+                if hash.hexdigest() != res.headers["etag"]:
+                    raise Exception("Downloading %r: checksum does not match. etag %r != md5 %r\n" %(
+                        url,
+                        res.headers["etag"],
+                        hash.hexdigest(),
+                    ))
             self.counter += 1
             print "Downloaded %s (%s left): %s" %(
                 self.counter,
@@ -387,7 +415,11 @@ class Downloader(object):
         if not download_path.exists():
             return "does not exist", download_path
         size = download_path.stat().st_size
-        if size != file_obj["size"]:
+        # Note: Slack appears to compress JPEG files, so ignore this error if
+        # the image is a JPEG (the integrity will be checked by the downloader
+        # to ensure that the file content is correct, but it may not be
+        # identical to the file originally uploaded).
+        if size != file_obj["size"] and file_obj["mimetype"] != "image/jpeg":
             msg = "size does not match (actual size %s != expected size %s)" %(
                 size,
                 file_obj["size"],
@@ -455,18 +487,11 @@ class ItemBase(object):
             return json.load(f)
 
     def _get_list(self, slack, latest_ts):
-        while True:
-            try:
-                return slack.history(
-                    channel=self.id,
-                    oldest=latest_ts,
-                    count=1000,
-                )
-            except HTTPError as e:
-                if "Too Many Requests" not in str(e):
-                    raise
-                print "Backing off after error (will retry in 5 seconds):", e
-                time.sleep(5)
+        return slack_retry(slack.history,
+            channel=self.id,
+            oldest=latest_ts,
+            count=1000,
+        )
 
     def _refresh_messages(self):
         latest_archive = next(self.iter_archives(reverse=True), None)
@@ -732,7 +757,7 @@ class ArchiveFiles(object):
             print "Walking backwards to find oldest file (this may take a little while)..."
 
         while not self.status.get("oldest_file"):
-            resp = self.slack.files.list(
+            resp = slack_retry(self.slack.files.list,
                 ts_to=self.status.get("ts_to_oldest") or 0,
             )
             assert_successful(resp)
@@ -759,8 +784,8 @@ class ArchiveFiles(object):
         # Now start at the latest file we've seen before and walk forward!
         while True:
             resp = (
-                self.slack.files.list() if not self.status.get("ts_from_newest") else
-                self.slack.files.list(ts_from=self.status["ts_from_newest"])
+                slack_retry(self.slack.files.list) if not self.status.get("ts_from_newest") else
+                slack_retry(self.slack.files.list, ts_from=self.status["ts_from_newest"])
             )
 
             assert_successful(resp)
@@ -808,7 +833,7 @@ class ArchiveFiles(object):
         def delete_file(x):
             file_file, file_obj = x
             try:
-                res = self.slack.files.delete(file_obj["id"])
+                res = slack_retry(self.slack.files.delete, file_obj["id"])
                 assert_successful(res)
             except Error as e:
                 print "Error deleting file %r: %s" %(file_obj["id"], e.message)
@@ -966,23 +991,11 @@ class SlackArchive(object):
 
 
 def args_get_archives(args):
-    for a in args.archive:
-        token, _, path = a.rpartition(":")
-        path = os.path.expanduser(path)
-        if not os.path.isdir(path):
-            print "Note: directory will be created: %s" %(path, )
-        while not token:
-            token = raw_input("API token for %s (see: https://api.slack.com/custom-integrations/legacy-tokens): " %(path, ))
-        yield {
-            "token": token,
-            "dir": path,
-            "name": path,
-        }
-
+    config_archives = []
     default_config_file = os.path.expanduser("~/.wayslack/config.yaml")
     config_file = (
         args.config if args.config else
-        default_config_file if os.path.exists(default_config_file) and not args.archive else
+        default_config_file if os.path.exists(default_config_file) else
         None
     )
     if config_file:
@@ -991,7 +1004,31 @@ def args_get_archives(args):
             archive.setdefault("name", archive["dir"])
             archive["dir"] = os.path.expanduser(archive["dir"])
             archive["dir"] = os.path.join(os.path.dirname(config_file), archive["dir"])
-            yield archive
+            config_archives.append(archive)
+
+    if not args.archive:
+        for ca in config_archives:
+            yield ca
+        return
+
+    for a in args.archive:
+        token, _, path = a.rpartition(":")
+        path = os.path.expanduser(path)
+        for ca in config_archives:
+            if ca["dir"].rstrip("/") == path.rstrip("/"):
+                yield ca
+                break
+        else:
+            if not os.path.isdir(path):
+                print "Note: directory will be created: %s" %(path, )
+            while not token:
+                token = raw_input("API token for %s (see: https://api.slack.com/custom-integrations/legacy-tokens): " %(path, ))
+            yield {
+                "token": token,
+                "dir": path,
+                "name": path,
+            }
+
 
 def main(argv=None):
     global VERBOSE

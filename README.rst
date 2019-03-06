@@ -70,6 +70,16 @@ API is sometimes incorrect. Because Wayslack will not delete files when the
 local size does not match the remote size, a few warnings will almost always be
 generated when deleting files (and, obviously, those files won't be deleted).
 
+**Note 2**: Slack appears to compress JPEGs, so this check is not applied to
+JPEGs. For all downloaded files, though, the etag is used to verify that the
+download was not corrupt (even if it isn't identical to the file originally
+uploaded).
+
+For example::
+
+   $ wayslack --confirm-delete ~/.wayslack/your-archive/
+
+
 __ https://stackoverflow.com/q/44742164/71522
 
 Exporting Slack Messages to SQL (PostgreSQL)
